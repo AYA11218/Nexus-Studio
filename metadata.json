@@ -1,0 +1,7 @@
+{
+  "name": "Smart Onboarding Flow",
+  "description": "A real-time interactive onboarding flow with dynamic spotlight overlays, action-based step completion, and live progress tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
