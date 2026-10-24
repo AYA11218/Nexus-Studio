@@ -326,6 +326,7 @@ export default function App() {
           stepIndex={currentStepIndex}
           totalSteps={activeSteps.length}
           completedStepIds={completedStepIds}
+          userRole={userRole}
           onNext={handleNext}
           onPrev={handlePrev}
           onSkip={handleSkip}

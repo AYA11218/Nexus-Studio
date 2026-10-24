@@ -13,15 +13,31 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowLeft,
-  ArrowRight
+  ArrowRight,
+  RefreshCw,
+  Command,
+  ChevronDown,
+  ChevronUp,
+  Bot,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
-import { OnboardingStep } from '../types';
+import { OnboardingStep, OnboardingRole } from '../types';
+import { soundManager } from '../utils/audioFeedback';
+
+export interface ProTipData {
+  proTip: string;
+  shortcut?: string;
+  efficiencyGain?: string;
+  source?: string;
+}
 
 interface SpotlightOverlayProps {
   step: OnboardingStep | null;
   stepIndex: number;
   totalSteps: number;
   completedStepIds: string[];
+  userRole?: OnboardingRole;
   onNext: () => void;
   onPrev: () => void;
   onSkip: () => void;
@@ -45,6 +61,7 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
   stepIndex,
   totalSteps,
   completedStepIds,
+  userRole = 'starter',
   onNext,
   onPrev,
   onSkip,
@@ -55,7 +72,101 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
   const [placement, setPlacement] = useState<'top' | 'bottom' | 'left' | 'right'>('bottom');
   const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const [actionSuccess, setActionSuccess] = useState(false);
+  const [autoAdvancing, setAutoAdvancing] = useState(false);
+  const [audioEnabled, setAudioEnabled] = useState(() => soundManager.isEnabled());
+  const autoAdvanceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
+
+  // Sync sound manager enabled state
+  useEffect(() => {
+    return soundManager.subscribe(setAudioEnabled);
+  }, []);
+
+  // Cancel auto-advance if user wants to stay on current step
+  const handleCancelAutoAdvance = useCallback(() => {
+    if (autoAdvanceTimerRef.current) {
+      clearTimeout(autoAdvanceTimerRef.current);
+      autoAdvanceTimerRef.current = null;
+    }
+    setAutoAdvancing(false);
+  }, []);
+
+  const triggerNext = useCallback(() => {
+    handleCancelAutoAdvance();
+    if (stepIndex === totalSteps - 1) {
+      soundManager.playTourComplete();
+    } else {
+      soundManager.playStepNext();
+    }
+    onNext();
+  }, [handleCancelAutoAdvance, onNext, stepIndex, totalSteps]);
+
+  const triggerPrev = useCallback(() => {
+    handleCancelAutoAdvance();
+    soundManager.playStepPrev();
+    onPrev();
+  }, [handleCancelAutoAdvance, onPrev]);
+
+  const triggerClose = useCallback(() => {
+    handleCancelAutoAdvance();
+    onClose();
+  }, [handleCancelAutoAdvance, onClose]);
+
+  // AI Pro-tip states
+  const [proTipMap, setProTipMap] = useState<Record<string, ProTipData>>({});
+  const proTipMapRef = useRef<Record<string, ProTipData>>({});
+  const [loadingStepId, setLoadingStepId] = useState<string | null>(null);
+  const [isProTipExpanded, setIsProTipExpanded] = useState(true);
+
+  // Fetch contextual Pro-tip from server-side Gemini API
+  const fetchProTip = useCallback(async (targetStep: OnboardingStep, force = false) => {
+    if (!targetStep) return;
+    if (!force && proTipMapRef.current[targetStep.id]) return;
+
+    setLoadingStepId(targetStep.id);
+    try {
+      const response = await fetch('/api/pro-tip', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          stepId: targetStep.id,
+          stepTitle: targetStep.title,
+          stepDescription: targetStep.description,
+          stepCategory: targetStep.category,
+          actionPrompt: targetStep.actionPrompt,
+          keyInsight: targetStep.keyInsight,
+          userRole: userRole || 'starter',
+          force,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const tipEntry: ProTipData = {
+          proTip: data.proTip,
+          shortcut: data.shortcut,
+          efficiencyGain: data.efficiencyGain,
+          source: data.source,
+        };
+        proTipMapRef.current[targetStep.id] = tipEntry;
+        setProTipMap((prev) => ({
+          ...prev,
+          [targetStep.id]: tipEntry,
+        }));
+      }
+    } catch {
+      // Gracefully handle network failures without logging noisy errors
+    } finally {
+      setLoadingStepId((curr) => (curr === targetStep.id ? null : curr));
+    }
+  }, [userRole]);
+
+  // Trigger pro-tip fetch when current step changes
+  useEffect(() => {
+    if (step) {
+      fetchProTip(step);
+    }
+  }, [step?.id, fetchProTip]);
 
   // Update target bounding client rect
   const updateTargetRect = useCallback(() => {
@@ -143,8 +254,13 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
     }
-    // Reset action success status for new step
+    // Reset action success status & auto-advance timer for new step
     setActionSuccess(false);
+    setAutoAdvancing(false);
+    if (autoAdvanceTimerRef.current) {
+      clearTimeout(autoAdvanceTimerRef.current);
+      autoAdvanceTimerRef.current = null;
+    }
 
     // Initial update
     const timer = setTimeout(updateTargetRect, 80);
@@ -173,16 +289,16 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        triggerClose();
       } else if (e.key === 'ArrowRight' || e.key === 'Enter') {
-        onNext();
+        triggerNext();
       } else if (e.key === 'ArrowLeft') {
-        onPrev();
+        triggerPrev();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onNext, onPrev, onClose]);
+  }, [triggerNext, triggerPrev, triggerClose]);
 
   // Smart action detection: listen for user actions on the target element
   useEffect(() => {
@@ -190,26 +306,62 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
     const el = document.getElementById(step.targetId);
     if (!el) return;
 
+    let advanceTimeout: NodeJS.Timeout | null = null;
+
     const handleAction = () => {
+      soundManager.playTaskComplete();
       setActionSuccess(true);
       onStepComplete(step.id);
-      // Auto-advance with subtle delay for celebration
-      setTimeout(() => {
-        setActionSuccess(false);
-      }, 1500);
+
+      // Auto-advance feature: automatically triggers handleNext when required action is completed
+      if (step.autoAdvance) {
+        setAutoAdvancing(true);
+        if (autoAdvanceTimerRef.current) {
+          clearTimeout(autoAdvanceTimerRef.current);
+        }
+        advanceTimeout = setTimeout(() => {
+          if (stepIndex === totalSteps - 1) {
+            soundManager.playTourComplete();
+          } else {
+            soundManager.playStepNext();
+          }
+          onNext();
+          setAutoAdvancing(false);
+          setActionSuccess(false);
+          autoAdvanceTimerRef.current = null;
+        }, 1000);
+        autoAdvanceTimerRef.current = advanceTimeout;
+      } else {
+        setTimeout(() => {
+          setActionSuccess(false);
+        }, 1500);
+      }
     };
 
     if (step.actionType === 'click') {
       el.addEventListener('click', handleAction, { once: true });
-      return () => el.removeEventListener('click', handleAction);
+      return () => {
+        el.removeEventListener('click', handleAction);
+        if (advanceTimeout) clearTimeout(advanceTimeout);
+      };
     } else if (step.actionType === 'type') {
       el.addEventListener('input', handleAction, { once: true });
-      return () => el.removeEventListener('input', handleAction);
+      return () => {
+        el.removeEventListener('input', handleAction);
+        if (advanceTimeout) clearTimeout(advanceTimeout);
+      };
     } else if (step.actionType === 'filter') {
       el.addEventListener('click', handleAction, { once: true });
-      return () => el.removeEventListener('click', handleAction);
+      return () => {
+        el.removeEventListener('click', handleAction);
+        if (advanceTimeout) clearTimeout(advanceTimeout);
+      };
     }
-  }, [step, onStepComplete]);
+
+    return () => {
+      if (advanceTimeout) clearTimeout(advanceTimeout);
+    };
+  }, [step, onStepComplete, onNext, stepIndex, totalSteps]);
 
   if (!step || !targetRect) return null;
 
@@ -272,14 +424,14 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
       {/* Clickable passthrough zone over target so users can actually interact with the highlighted element */}
       <div
         id="tour-target-passthrough"
-        className="absolute pointer-events-auto cursor-pointer"
+        className="absolute pointer-events-none"
         style={{
           left: `${targetRect.x}px`,
           top: `${targetRect.y}px`,
           width: `${targetRect.width}px`,
           height: `${targetRect.height}px`,
         }}
-        title="Interactive target: Click or interact with this feature"
+        title="Interactive target"
       />
 
       {/* Interactive Tooltip Card */}
@@ -293,7 +445,7 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
           top: `${tooltipPos.top}px`,
           left: `${tooltipPos.left}px`,
         }}
-        className="absolute pointer-events-auto w-[380px] max-w-[calc(100vw-32px)] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200/80 dark:border-slate-800 p-5 z-50 text-slate-800 dark:text-slate-100"
+        className="absolute pointer-events-auto w-[400px] max-w-[calc(100vw-32px)] max-h-[88vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200/80 dark:border-slate-800 p-5 z-50 text-slate-800 dark:text-slate-100"
       >
         {/* Pointer indicator arrow */}
         <div
@@ -327,8 +479,21 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
               ~{step.estimatedSeconds}s
             </span>
             <button
+              id="tour-btn-sound-toggle"
+              onClick={() => soundManager.toggle()}
+              className={`p-1 rounded-lg transition-colors ${
+                audioEnabled
+                  ? 'text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40'
+                  : 'text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+              title={audioEnabled ? 'Mute sound effects' : 'Enable sound effects'}
+              aria-label={audioEnabled ? 'Mute sound effects' : 'Enable sound effects'}
+            >
+              {audioEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+            </button>
+            <button
               id="tour-btn-dismiss"
-              onClick={onClose}
+              onClick={triggerClose}
               className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
               title="Close guide (Esc)"
             >
@@ -350,10 +515,11 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
           </p>
         </div>
 
-        {/* Live Action Prompt with Real-time Success Notification */}
+        {/* Live Action Prompt with Real-time Success Notification & Auto-Advance */}
         {step.actionPrompt && (
           <div className="mb-3">
             <div
+              id="spotlight-action-box"
               className={`p-2.5 rounded-xl text-xs flex items-start gap-2.5 border transition-all duration-300 ${
                 actionSuccess
                   ? 'bg-emerald-50 border-emerald-300 text-emerald-900 dark:bg-emerald-950/40 dark:border-emerald-800 dark:text-emerald-200'
@@ -365,19 +531,159 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
               ) : (
                 <Sparkles className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
               )}
-              <div className="flex-1">
-                <span className="font-semibold block">
-                  {actionSuccess ? 'Action completed!' : 'Try it live now:'}
-                </span>
-                <span className="text-[11px] leading-snug">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-1 mb-0.5">
+                  <span className="font-semibold block truncate">
+                    {actionSuccess ? 'Action completed!' : 'Try it live now:'}
+                  </span>
+
+                  {/* Auto-advance configuration indicator */}
+                  {step.autoAdvance && !actionSuccess && (
+                    <span
+                      id="badge-auto-advance"
+                      className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/60 dark:text-blue-300 flex-shrink-0"
+                      title="This step will automatically advance when you complete the action"
+                    >
+                      <Zap className="w-2.5 h-2.5 fill-current" />
+                      Auto-advance
+                    </span>
+                  )}
+
+                  {/* Cancel button if currently auto-advancing */}
+                  {autoAdvancing && (
+                    <button
+                      id="btn-cancel-auto-advance"
+                      onClick={handleCancelAutoAdvance}
+                      className="text-[10px] text-emerald-700 hover:text-emerald-900 dark:text-emerald-300 dark:hover:text-emerald-100 underline font-medium flex-shrink-0 ml-1"
+                      title="Cancel automatic advance and stay on this step"
+                    >
+                      Stay on step
+                    </button>
+                  )}
+                </div>
+
+                <span className="text-[11px] leading-snug block">
                   {actionSuccess
-                    ? 'Great job! Live interaction detected on this component.'
+                    ? autoAdvancing
+                      ? 'Live action detected! Auto-advancing to next step...'
+                      : 'Great job! Live interaction detected on this component.'
                     : step.actionPrompt}
                 </span>
+
+                {/* Visual countdown progress bar when auto-advancing */}
+                {autoAdvancing && (
+                  <div className="w-full bg-emerald-200/80 dark:bg-emerald-900/70 h-1.5 rounded-full overflow-hidden mt-2">
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: '100%' }}
+                      transition={{ duration: 1, ease: 'linear' }}
+                      className="bg-emerald-600 dark:bg-emerald-400 h-full rounded-full"
+                    />
+                  </div>
+                )}
               </div>
             </div>
           </div>
         )}
+
+        {/* Context-Aware AI Pro-tip Feature Powered by Gemini */}
+        <div className="mb-3.5">
+          <div
+            id="spotlight-pro-tip-card"
+            className="rounded-xl border border-indigo-200/80 dark:border-indigo-800/80 bg-gradient-to-br from-indigo-50/70 via-purple-50/40 to-blue-50/50 dark:from-indigo-950/40 dark:via-purple-950/30 dark:to-slate-900/60 p-3 shadow-xs relative overflow-hidden transition-all duration-200"
+          >
+            {/* Top decorative aura */}
+            <div className="absolute top-0 right-0 w-24 h-12 bg-gradient-to-bl from-purple-400/20 to-transparent blur-lg pointer-events-none" />
+
+            {/* Header row */}
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <div className="flex items-center gap-1.5">
+                <div className="w-5 h-5 rounded-md bg-indigo-600 dark:bg-indigo-500 text-white flex items-center justify-center shadow-xs">
+                  <Sparkles className="w-3 h-3 animate-pulse" />
+                </div>
+                <span className="text-xs font-bold text-indigo-950 dark:text-indigo-200 tracking-tight flex items-center gap-1">
+                  AI Pro-Tip
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/70 text-indigo-700 dark:text-indigo-300">
+                    Gemini AI
+                  </span>
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1">
+                <button
+                  id="btn-refresh-pro-tip"
+                  onClick={() => {
+                    if (step) {
+                      soundManager.playProTipChime();
+                      fetchProTip(step, true);
+                    }
+                  }}
+                  disabled={loadingStepId === step.id}
+                  className="p-1 rounded-md text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100/70 dark:hover:bg-indigo-900/60 transition-colors disabled:opacity-50"
+                  title="Generate fresh AI hint"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingStepId === step.id ? 'animate-spin' : ''}`} />
+                </button>
+                <button
+                  id="btn-toggle-pro-tip"
+                  onClick={() => setIsProTipExpanded(!isProTipExpanded)}
+                  className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100/60 dark:hover:bg-slate-800/60 transition-colors"
+                  title={isProTipExpanded ? 'Collapse pro-tip' : 'Expand pro-tip'}
+                >
+                  {isProTipExpanded ? (
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Pro-tip Content Body */}
+            {isProTipExpanded && (
+              <div>
+                {loadingStepId === step.id && !proTipMap[step.id] ? (
+                  <div className="py-2 space-y-1.5 animate-pulse">
+                    <div className="h-3 bg-indigo-200/70 dark:bg-indigo-900/50 rounded-full w-3/4" />
+                    <div className="h-3 bg-indigo-200/50 dark:bg-indigo-900/30 rounded-full w-5/6" />
+                    <span className="text-[10px] text-indigo-500 dark:text-indigo-400 flex items-center gap-1 pt-1">
+                      <Zap className="w-3 h-3 animate-bounce" />
+                      Gemini is generating contextual power-tips for {step.title}...
+                    </span>
+                  </div>
+                ) : (
+                  <div className="space-y-2 mt-1">
+                    <p className="text-xs text-indigo-950 dark:text-indigo-100 leading-relaxed font-normal">
+                      {proTipMap[step.id]?.proTip || step.keyInsight || 'Use keyboard shortcuts and quick actions to accelerate your daily workflow.'}
+                    </p>
+
+                    {/* Metadata chips: Shortcut & Efficiency Gain */}
+                    {(proTipMap[step.id]?.shortcut || proTipMap[step.id]?.efficiencyGain) && (
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                        {proTipMap[step.id]?.shortcut && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white dark:bg-slate-800 border border-indigo-200/60 dark:border-indigo-800 text-[10px] font-mono font-bold text-indigo-700 dark:text-indigo-300 shadow-2xs">
+                            <Command className="w-2.5 h-2.5" />
+                            {proTipMap[step.id]?.shortcut}
+                          </span>
+                        )}
+
+                        {proTipMap[step.id]?.efficiencyGain && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200/60 dark:border-emerald-800 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                            {proTipMap[step.id]?.efficiencyGain}
+                          </span>
+                        )}
+
+                        <span className="text-[9px] text-slate-400 dark:text-slate-500 ml-auto flex items-center gap-0.5">
+                          ✨ Contextual AI hint
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
 
         {/* Key Insight Box */}
         {step.keyInsight && (
@@ -408,7 +714,7 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
           <div className="flex items-center gap-2">
             <button
               id="tour-btn-prev"
-              onClick={onPrev}
+              onClick={triggerPrev}
               disabled={isFirst}
               className={`p-1.5 rounded-lg border text-xs font-medium flex items-center transition-colors ${
                 isFirst
@@ -422,7 +728,7 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
 
             <button
               id="tour-btn-next"
-              onClick={onNext}
+              onClick={triggerNext}
               className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-semibold shadow-sm shadow-blue-500/30 flex items-center gap-1.5 transition-all"
             >
               <span>{isLast ? 'Complete Tour' : 'Next'}</span>
@@ -436,7 +742,7 @@ export const SpotlightOverlay: React.FC<SpotlightOverlayProps> = ({
           <span>Shortcuts: ← / → or Esc</span>
           <button
             id="tour-btn-skip"
-            onClick={onSkip}
+            onClick={triggerClose}
             className="hover:underline text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
           >
             Skip all

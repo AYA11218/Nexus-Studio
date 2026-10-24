@@ -9,6 +9,7 @@ export interface OnboardingStep {
   position?: 'top' | 'bottom' | 'left' | 'right' | 'auto';
   actionPrompt?: string;
   actionType?: 'click' | 'type' | 'filter' | 'toggle' | 'none';
+  autoAdvance?: boolean;
   badge?: string;
   keyInsight?: string;
   estimatedSeconds: number;

@@ -322,11 +322,22 @@ export const ProgressTrackerDrawer: React.FC<ProgressTrackerDrawerProps> = ({
                           <span className={isDone ? 'line-through text-slate-400 dark:text-slate-500' : ''}>
                             {idx + 1}. {step.title}
                           </span>
-                          {step.badge && (
-                            <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-slate-200/60 dark:bg-slate-700 text-slate-600 dark:text-slate-300 ml-1">
-                              {step.badge}
-                            </span>
-                          )}
+                          <div className="flex items-center gap-1 flex-shrink-0 ml-1">
+                            {step.autoAdvance && (
+                              <span
+                                title="Auto-advances when action is completed"
+                                className="text-[9px] font-medium px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/50 flex items-center gap-0.5"
+                              >
+                                <Zap className="w-2.5 h-2.5 fill-current" />
+                                Auto
+                              </span>
+                            )}
+                            {step.badge && (
+                              <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-slate-200/60 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                                {step.badge}
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <p className="text-[11px] text-slate-400 dark:text-slate-500 truncate mt-0.5">
                           {step.actionPrompt || step.description}
